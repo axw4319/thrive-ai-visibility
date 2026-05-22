@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Visibility Report Generator v1.4.0</title>
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+:root{--bg:#07070d;--s1:#111119;--s2:#18182a;--bd:#282840;--tx:#e0e0f0;--dim:#7878a0;--ac:#6c5ce7;--ac2:#a29bfe;--grn:#00d4aa;--red:#ff5e6e;--orn:#ffc552}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--tx);min-height:100vh}
+.hdr{padding:16px 32px;border-bottom:1px solid var(--bd);background:var(--s1);display:flex;align-items:center;gap:14px}
+.hdr .logo{height:22px;opacity:0.9}.hdr .sep{width:1px;height:22px;background:var(--bd)}.hdr .sub{font-size:13px;color:var(--dim)}
+.cfg{max-width:860px;margin:32px auto;padding:0 20px}.card{background:var(--s1);border:1px solid var(--bd);border-radius:14px;padding:28px 32px}.card h2{font-size:17px;font-weight:600;margin-bottom:20px}
+.fg{display:flex;flex-direction:column;gap:5px;position:relative;margin-bottom:16px}
+.fg label{font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+.fg input{background:var(--bg);border:1px solid var(--bd);border-radius:7px;padding:10px 14px;color:var(--tx);font-family:'DM Sans',sans-serif;font-size:13px;outline:none}
+.fg input:focus{border-color:var(--ac)}.fg input::placeholder{color:var(--dim);opacity:.7}
+.btn{margin-top:8px;width:100%;padding:13px;background:linear-gradient(135deg,var(--ac),#8b7cf7);border:none;border-radius:9px;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;cursor:pointer}
+.btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 24px #6c5ce755}.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-pdf{background:linear-gradient(135deg,#00d4aa,#00b894);margin-top:12px}
+.log{margin-top:14px;padding:12px;background:var(--bg);border-radius:7px;font-size:11px;font-family:'Space Mono',monospace;color:var(--dim);max-height:260px;overflow-y:auto;display:none;line-height:1.6}
+.log.on{display:block}.log .ok{color:var(--grn)}.log .er{color:var(--red)}.log .wr{color:var(--orn)}
+.scans-list{margin-top:20px;max-height:220px;overflow-y:auto}.scans-list h3{font-size:13px;color:var(--dim);margin-bottom:10px;position:sticky;top:0;background:var(--s1);padding-bottom:4px;z-index:1}
+.scan-item{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:var(--bg);border:1px solid var(--bd);border-radius:7px;margin-bottom:6px;font-size:12px;cursor:pointer}
+.scan-item:hover{border-color:var(--ac)}.scan-item .st{font-size:10px;padding:2px 8px;border-radius:4px;font-weight:600}
+.st.complete{background:#00d4aa22;color:var(--grn)}.st.error{background:#ff5e6e22;color:var(--red)}.st.pending,.st.scraping,.st.analyzing,.st.generating_prompts,.st.querying,.st.calculating{background:#ffc55222;color:var(--orn)}
+#rpt{display:none;max-width:860px;margin:32px auto;padding:0 20px 80px}#rpt.on{display:block}
+.page{background:#fff;color:#1a1a2e;overflow:hidden;margin-bottom:20px;box-shadow:0 4px 30px #0004;width:100%;border-radius:0}
+.rh{background:linear-gradient(135deg,#1a1a2e,#2d2d5e);padding:20px 36px;color:#fff;position:relative}
+.rh .tl{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:2px;color:#fff9;margin-bottom:4px}.rh h1{font-size:24px;font-weight:700;margin-bottom:6px}.rh .dr{font-size:12px;color:#fff7}
+.rh .rh-logo{position:absolute;top:50%;right:36px;transform:translateY(-50%);height:28px;opacity:0.85}
+.mr{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:2px solid #eee}.mc{padding:12px 10px;text-align:center;border-right:1px solid #eee}.mc:last-child{border:none}
+.mc .v{font-size:22px;font-weight:700;color:#6c5ce7}.mc .l{font-size:9px;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:.4px;margin-top:3px}
+.rs{padding:14px 36px}.rs h3{font-size:14px;font-weight:700;color:#1a1a2e;margin-bottom:2px}.rs .ss{font-size:10px;color:#999;margin-bottom:10px}
+.co{background:#f0f0ff;border-left:4px solid #6c5ce7;padding:8px 14px;font-size:11px;color:#555;border-radius:0 7px 7px 0;margin-bottom:10px}.co b{color:#6c5ce7}
+
+/* Bar chart — use pixel heights for html2canvas compatibility */
+.bc{display:flex;align-items:flex-end;gap:6px;height:180px;padding-top:20px}
+.bg{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
+.bpct{font-size:8px;font-weight:600;color:#555;margin-bottom:2px}
+.bbar{width:28px;border-radius:4px 4px 0 0;min-height:2px}
+.bl{font-size:9px;color:#666;text-align:center;max-width:65px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px}.bl.target{font-weight:700;color:#1a1a2e}
+
+.bt{width:100%;border-collapse:collapse;font-size:12px}.bt th{text-align:left;padding:9px 10px;font-size:9px;font-weight:700;color:#999;text-transform:uppercase;border-bottom:2px solid #eee}
+.bt td{padding:9px 10px;border-bottom:1px solid #f2f2f2}.bt tr:last-child td{border:none}.bt .rk{font-weight:700;color:#6c5ce7;width:28px}.bt .bn{font-weight:600;color:#1a1a2e}.bt .nm{font-family:'Space Mono',monospace;font-size:11px}
+.hl{background:#f0f0ff !important}
+.vis-bar{width:50px;height:6px;background:#e8e8ee;border-radius:3px;display:inline-block;margin-right:5px;vertical-align:middle;overflow:hidden;position:relative}
+.vis-bar .fill{height:100%;border-radius:3px;background:#6c5ce7;position:absolute;left:0;top:0}
+.sent-bar{width:50px;height:6px;background:#e8e8ee;border-radius:3px;display:inline-block;margin-right:5px;vertical-align:middle;overflow:hidden;position:relative}
+.sent-bar .fill{height:100%;border-radius:3px;background:#4834d4;position:absolute;left:0;top:0}
+
+/* Model breakdown — pixel heights for bars */
+.mb{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}.mi{flex:1;min-width:120px;background:#f8f8fc;padding:7px;border-radius:7px;text-align:center;overflow:hidden}
+.mi .mn{font-size:8px;font-weight:600;color:#999;text-transform:uppercase;margin-bottom:4px}
+.mm{height:60px;display:flex;align-items:flex-end;justify-content:center;gap:3px}
+.mmb{width:14px;border-radius:2px 2px 0 0;min-height:2px}
+.model-legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:9px;color:#666}.ml-item{display:flex;align-items:center;gap:4px}.ml-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0}
+
+/* Donut — labels with lines */
+.donut-wrap{display:flex;align-items:center;justify-content:center;overflow:visible}
+
+/* Prompt table */
+.pt{width:100%;border-collapse:collapse;font-size:11px}.pt th{text-align:left;padding:7px 8px;font-size:8px;font-weight:700;color:#999;text-transform:uppercase;border-bottom:2px solid #eee}
+.pt td{padding:7px 8px;border-bottom:1px solid #f5f5f5;vertical-align:top}.pt tr:last-child td{border:none}
+.pt tr.hl td{background:#f0f0ff}
+.pt .brand-hl{font-weight:700;color:#6c5ce7}
+
+/* Key takeaways */
+.tk{list-style:none;padding:0;margin:10px 0}.tk li{padding:6px 0;font-size:12px;color:#444;border-bottom:1px solid #f2f2f2;position:relative;padding-left:16px}
+.tk li::before{content:'—';position:absolute;left:0;color:#6c5ce7;font-weight:700}
+.meth{font-size:9px;color:#999;padding:14px 36px;border-top:1px solid #eee;line-height:1.6}
+
+/* Floating bottom bar */
+.float-bar{position:fixed;bottom:0;left:0;right:0;background:var(--s1);border-top:1px solid var(--bd);padding:12px 0;display:none;z-index:100;backdrop-filter:blur(12px);background:rgba(17,17,25,0.92)}
+.float-bar.on{display:block}
+.float-bar-inner{max-width:860px;margin:0 auto;display:flex;align-items:center;justify-content:center;gap:12px;padding:0 20px}
+.fb-btn{padding:10px 28px;border-radius:8px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--bd);transition:all .15s}
+.fb-new{background:transparent;color:var(--tx)}.fb-new:hover{border-color:var(--ac);color:var(--ac)}
+.fb-pdf{background:linear-gradient(135deg,var(--ac),#8b7cf7);color:#fff;border:none}.fb-pdf:hover{transform:translateY(-1px);box-shadow:0 4px 16px #6c5ce755}
+</style>
+</head>
+<body>
+<div class="hdr"><img class="logo" src="/logo-white.png" alt="Thrive Agency"><div class="sep"></div><div class="sub">AI Visibility Report Generator v1.4.0</div></div>
+<div class="cfg">
+  <div class="card">
+    <h2>Generate AI Visibility Report</h2>
+    <div class="fg"><label>Brand Name</label><input id="brand" placeholder="e.g. Thrive Internet Marketing Agency"></div>
+    <div class="fg"><label>Website URL</label><input id="url" placeholder="e.g. https://thriveagency.com"></div>
+    <div class="fg"><label>Prompt Clusters (optional)</label><input id="clusters" placeholder="e.g. done for you revenue management, dynamic airbnb pricing"><div style="font-size:10px;color:var(--dim);margin-top:3px">Enter prompt cluster keywords separated by commas to steer the AI search queries</div></div>
+    <button class="btn" id="goBtn" onclick="startScan()">Generate Report</button>
+    <button class="btn btn-pdf" id="pdfBtn" style="display:none" onclick="dlPDF()">Download PDF</button>
+    <div class="log" id="log"></div>
+    <div class="scans-list" id="scansList"></div>
+  </div>
+</div>
+<div id="rpt"><div id="report"></div></div>
+<div class="float-bar" id="floatBar">
+  <div class="float-bar-inner">
+    <button class="fb-btn fb-new" onclick="newReport()">&#8634; New Report</button>
+    <button class="fb-btn fb-new" onclick="dlCSV()">&#8623; Export CSV</button>
+    <button class="fb-btn fb-new" onclick="copyLink()">&#9741; Share Link</button>
+    <button class="fb-btn fb-pdf" onclick="dlPDF()">&#8595; Download PDF</button>
+  </div>
+</div>
+<script>
+const CL=['#6c5ce7','#00cec9','#e17055','#fdcb6e','#0984e3','#d63031','#00b894','#e84393','#636e72','#fab1a0','#74b9ff','#ffeaa7','#dfe6e9','#a29bfe','#55efc4','#fd79a8','#81ecec','#b2bec3','#f9ca24','#ff6b6b'];
+let brandColorMap={},pollId=null,currentScanId=null,currentBrandName='';
+const MODEL_NAMES={'chatgpt':'ChatGPT','gemini':'Gemini','perplexity':'Perplexity','google_ai_overview':'Google AI Overview'};
+
+function L(m,c){const l=document.getElementById('log');l.classList.add('on');l.innerHTML+=`<div class="${c||''}">${m}</div>`;l.scrollTop=l.scrollHeight}
+function esc(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):''}
+function pf(v){return v!=null?v.toFixed(1)+'%':'—'}
+function getBrandColor(n){if(!brandColorMap[n])brandColorMap[n]=CL[Object.keys(brandColorMap).length%CL.length];return brandColorMap[n]}
+function mn(m){return MODEL_NAMES[m]||m}
+
+async function startScan(){
+  const brand=document.getElementById('brand').value.trim();
+  let url=document.getElementById('url').value.trim();
+  const clusters=document.getElementById('clusters').value.trim();
+  if(!brand||!url)return alert('Enter brand name and URL');
+  if(!/^https?:\/\//i.test(url)){url='https://'+url;document.getElementById('url').value=url;}
+  document.getElementById('goBtn').disabled=true;
+  document.getElementById('pdfBtn').style.display='none';
+  document.getElementById('log').innerHTML='';
+  L('Starting scan for <b>'+esc(brand)+'</b>'+(clusters?' with clusters: <i>'+esc(clusters)+'</i>':'')+'...','ok');
+
+  const res=await fetch('/api/scan/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({brand_name:brand,website_url:url,prompt_clusters:clusters})});
+  const data=await res.json();
+  if(data.error){L('Error: '+esc(data.error),'er');document.getElementById('goBtn').disabled=false;return}
+
+  currentScanId=data.scan_id;
+  L('Scan #'+data.scan_id+' created. Running pipeline...','ok');
+  pollStatus(data.scan_id);
+}
+
+function pollStatus(id){
+  if(pollId)clearInterval(pollId);
+  pollId=setInterval(async()=>{
+    const res=await fetch('/api/scan/'+id+'/status');
+    const d=await res.json();
+    L(esc(d.progress||d.status),'wr');
+    if(d.status==='complete'){
+      clearInterval(pollId);pollId=null;
+      L('Scan complete! Loading report...','ok');
+      document.getElementById('goBtn').disabled=false;
+      await loadReport(id);
+      loadScans();
+    }else if(d.status==='error'){
+      clearInterval(pollId);pollId=null;
+      L('Error: '+esc(d.progress),'er');
+      document.getElementById('goBtn').disabled=false;
+      loadScans();
+    }
+  },3000);
+}
+
+async function loadReport(id){
+  currentScanId=id;
+  const res=await fetch('/api/scan/'+id+'/report');
+  const D=await res.json();
+  currentBrandName=D.scan.brand_name;
+  brandColorMap={};
+  render(D);
+  document.getElementById('rpt').classList.add('on');
+  document.getElementById('pdfBtn').style.display='none';
+  document.getElementById('floatBar').classList.add('on');
+  document.getElementById('rpt').scrollIntoView({behavior:'smooth'});
+}
+
+function newReport(){
+  document.getElementById('rpt').classList.remove('on');
+  document.getElementById('report').innerHTML='';
+  document.getElementById('floatBar').classList.remove('on');
+  document.getElementById('brand').value='';
+  document.getElementById('url').value='';
+  document.getElementById('clusters').value='';
+  document.getElementById('log').innerHTML='';
+  document.getElementById('log').classList.remove('on');
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+async function loadScans(){
+  const res=await fetch('/api/scans');
+  const scans=await res.json();
+  const el=document.getElementById('scansList');
+  if(!scans.length){el.innerHTML='';return}
+  el.innerHTML='<h3>Past Scans</h3>'+scans.map(s=>{const d=new Date(s.created_at);const ts=d.toLocaleDateString()+' '+d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});return `<div class="scan-item" onclick="loadReport(${s.id})"><div><b>${esc(s.brand_name)}</b> &mdash; ${ts}</div><div class="st ${s.status}">${s.status}</div></div>`}).join('');
+}
+
+function donutSVG(items,targetNorm){
+  const W=520,H=320,cx=W/2,cy=H/2,r=110,r2=68;
+  let paths='',angle=-Math.PI/2,labels='',lines='';
+  const total=items.reduce((s,i)=>s+i.value,0);
+  if(total===0)return `<svg width="${W}" height="${H}"></svg>`;
+  const labelPositions=[];
+  for(const it of items){
+    const pct=it.value/total;if(pct<=0)continue;
+    const a1=angle,a2=angle+pct*Math.PI*2;
+    const x1=cx+r*Math.cos(a1),y1=cy+r*Math.sin(a1);
+    const x2=cx+r*Math.cos(a2),y2=cy+r*Math.sin(a2);
+    const ix1=cx+r2*Math.cos(a2),iy1=cy+r2*Math.sin(a2);
+    const ix2=cx+r2*Math.cos(a1),iy2=cy+r2*Math.sin(a1);
+    const large=pct>0.5?1:0;
+    paths+=`<path d="M${x1},${y1} A${r},${r} 0 ${large} 1 ${x2},${y2} L${ix1},${iy1} A${r2},${r2} 0 ${large} 0 ${ix2},${iy2}Z" fill="${it.color}"/>`;
+    // Label with leader line
+    const mid=a1+pct*Math.PI;
+    const isRight=Math.cos(mid)>=0;
+    const elbowR=r+16;
+    const ex=cx+elbowR*Math.cos(mid),ey=cy+elbowR*Math.sin(mid);
+    const lx=isRight?cx+r+55:cx-r-55;
+    // Avoid label overlap by nudging Y
+    let ly=ey;
+    for(const prev of labelPositions){if(Math.abs(ly-prev)<14)ly=prev+(ly>=prev?14:-14)}
+    ly=Math.max(18,Math.min(H-8,ly));
+    labelPositions.push(ly);
+    const anchor=isRight?'start':'end';
+    const isTarget=it.norm===targetNorm;
+    const fw=isTarget?'700':'500';
+    const fc=isTarget?'#1a1a2e':'#555';
+    lines+=`<line x1="${ex}" y1="${ey}" x2="${lx}" y2="${ly}" stroke="#ccc" stroke-width="0.8"/>`;
+    lines+=`<circle cx="${ex}" cy="${ey}" r="2" fill="${it.color}"/>`;
+    labels+=`<text x="${isRight?lx+4:lx-4}" y="${ly}" text-anchor="${anchor}" dominant-baseline="middle" fill="${fc}" font-size="9" font-weight="${fw}" font-family="DM Sans,sans-serif">${esc(it.label)} ${Math.round(pct*100)}%</text>`;
+    angle=a2;
+  }
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible">${paths}${lines}${labels}</svg>`;
+}
+
+function render(D){
+  const t=D.target, s=D.scan, brands=D.metrics;
+  const maxVis=brands.length?brands[0].visibility_pct:1;
+  const top10=D.top_brands;
+  const targetNorm=t.normalized_name||D.scan.brand_name.toLowerCase();
+  const now=new Date(s.created_at);
+  const months=['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const MAX_BAR_H=130; // max bar height in pixels
+
+  let h=`<div class="page">`;
+  // Header
+  h+=`<div class="rh"><div class="tl">AI Search Visibility Analysis</div><h1>${esc(s.brand_name).toUpperCase()}</h1><div class="dr">${months[now.getMonth()].toUpperCase()} ${now.getFullYear()}</div><img class="rh-logo" src="/logo-white.png" alt="Thrive Agency"></div>`;
+  // KPI row
+  h+=`<div class="mr">`;
+  h+=`<div class="mc"><div class="v">${pf(t.visibility_pct)}</div><div class="l">AI Visibility</div></div>`;
+  h+=`<div class="mc"><div class="v">${t.avg_sentiment!=null?Math.round(((t.avg_sentiment+1)/2)*100):'—'}</div><div class="l">Reputation</div></div>`;
+  h+=`<div class="mc"><div class="v">${pf(t.market_share_pct)}</div><div class="l">Market Share</div></div>`;
+  h+=`<div class="mc"><div class="v">${D.brands_tracked}</div><div class="l">Brands Tracked</div></div>`;
+  h+=`<div class="mc"><div class="v">${D.total_conversations}</div><div class="l">Conversations</div></div>`;
+  h+=`</div>`;
+
+  // Callout
+  if(D.leader){
+    if(D.leader_gap>0){
+      h+=`<div class="rs"><div class="co"><b>${esc(D.leader.brand_name)}</b> leads at <b>${pf(D.leader.visibility_pct)}</b>, ${D.leader_gap}% ahead of <b>${esc(s.brand_name)}</b>.</div></div>`;
+    } else {
+      h+=`<div class="rs"><div class="co"><b>${esc(s.brand_name)}</b> leads overall visibility at <b>${pf(t.visibility_pct)}</b>.</div></div>`;
+    }
+  }
+
+  // Bar chart - AI Visibility Comparison (pixel heights for PDF)
+  h+=`<div class="rs"><h3>AI Visibility Comparison</h3><div class="ss">The percentage your brand is mentioned in all tracked AI answers</div><div class="bc">`;
+  for(const b of top10){
+    const pct=maxVis>0?(b.visibility_pct/maxVis):0;
+    const barH=Math.max(Math.round(pct*MAX_BAR_H),3);
+    const col=getBrandColor(b.normalized_name);
+    const isTarget=b.normalized_name===targetNorm;
+    h+=`<div class="bg"><div class="bpct">${b.visibility_pct.toFixed(1)}%</div><div class="bbar" style="height:${barH}px;background:${col}"></div><div class="bl ${isTarget?'target':''}">${esc(b.brand_name)}</div></div>`;
+  }
+  h+=`</div></div>`;
+
+  // Donut - Market Share with inline labels + leader lines
+  const donutItems=top10.map(b=>({label:b.brand_name,value:b.market_share_pct,color:getBrandColor(b.normalized_name),norm:b.normalized_name}));
+  h+=`<div class="rs"><h3>Market Share</h3><div class="ss">The percentage your brand is mentioned in AI answers compared to your competitors</div><div class="donut-wrap">`;
+  h+=donutSVG(donutItems,targetNorm);
+  h+=`</div></div>`;
+
+  // Model Breakdown (pixel heights for bars, show all models)
+  h+=`<div class="rs"><h3>Visibility by AI Model</h3><div class="ss">Top brands across AI models</div><div class="mb">`;
+  const MODEL_BAR_H=50;
+  for(const [model, topBrands] of Object.entries(D.model_breakdown)){
+    const modelMax=topBrands.length?topBrands[0].count:1;
+    h+=`<div class="mi"><div class="mn">${esc(mn(model))}</div><div class="mm">`;
+    for(const b of topBrands){
+      const pct=modelMax>0?(b.count/modelMax):0;
+      const barH=Math.max(Math.round(pct*MODEL_BAR_H),2);
+      h+=`<div class="mmb" style="height:${barH}px;background:${getBrandColor(b.name.toLowerCase().replace(/[^\w]/g,''))}" title="${esc(b.name)}: ${b.count}"></div>`;
+    }
+    h+=`</div></div>`;
+  }
+  h+=`</div>`;
+  // Model legend
+  const legendBrands=new Set();
+  for(const topBrands of Object.values(D.model_breakdown))for(const b of topBrands)legendBrands.add(b.name);
+  h+=`<div class="model-legend">`;
+  for(const name of legendBrands){
+    h+=`<div class="ml-item"><div class="ml-dot" style="background:${getBrandColor(name.toLowerCase().replace(/[^\w]/g,''))}"></div>${esc(name)}</div>`;
+  }
+  h+=`</div></div>`;
+  h+=`</div>`; // end page 1
+
+  // Page 2: Competitors table
+  h+=`<div class="page">`;
+  h+=`<div class="rs"><h3>Top Competitors</h3><div class="ss">Competitors ranked by AI Visibility</div>`;
+  h+=`<table class="bt"><thead><tr><th>#</th><th>Brand</th><th>Visibility</th><th>Market Share</th><th>Mentions</th><th>Avg. Position</th><th>Reputation</th></tr></thead><tbody>`;
+  brands.forEach((b,i)=>{
+    const isTarget=b.normalized_name===targetNorm;
+    const repScore=Math.round(((b.avg_sentiment+1)/2)*100);
+    h+=`<tr class="${isTarget?'hl':''}"><td class="rk">${i+1}</td><td class="bn">${isTarget?'<b>':''}${esc(b.brand_name)}${isTarget?'</b>':''}</td>`;
+    h+=`<td class="nm"><div class="vis-bar"><div class="fill" style="width:${Math.min(b.visibility_pct/maxVis*100,100)}%"></div></div>${pf(b.visibility_pct)}</td>`;
+    h+=`<td class="nm">${pf(b.market_share_pct)}</td><td class="nm">${b.mention_count}</td><td class="nm">${b.avg_rank.toFixed(1)}</td>`;
+    h+=`<td class="nm"><div class="sent-bar"><div class="fill" style="width:${repScore}%"></div></div>${repScore}</td></tr>`;
+  });
+  h+=`</tbody></table></div>`;
+  h+=`</div>`; // end page 2
+
+  // Page 3: Prompts + Key Takeaways
+  h+=`<div class="page">`;
+  h+=`<div class="rs"><h3>Top Search Prompts</h3><div class="ss">Top ${D.prompt_results.length} prompts by search volume</div>`;
+  h+=`<table class="pt"><thead><tr><th>#</th><th>Query</th><th>Visibility</th><th>Leaders</th></tr></thead><tbody>`;
+  D.prompt_results.forEach((p,i)=>{
+    const hasTarget=p.visibility_pct>0;
+    // Bold brand name in competitors list if target is present
+    const competitors=p.top_competitors.map(c=>{
+      const cNorm=c.toLowerCase().replace(/[^\w\s-]/g,'').replace(/\s+/g,' ').trim();
+      const tNorm=s.brand_name.toLowerCase().replace(/[^\w\s-]/g,'').replace(/\s+/g,' ').trim();
+      if(cNorm.includes(tNorm)||tNorm.includes(cNorm)) return `<span class="brand-hl">${esc(c)}</span>`;
+      return esc(c);
+    }).join(', ');
+    h+=`<tr class="${hasTarget?'hl':''}"><td class="nm">${i+1}</td><td style="max-width:320px">"${esc(p.prompt)}"</td>`;
+    h+=`<td class="nm">${p.visibility_pct.toFixed(1)}%</td>`;
+    h+=`<td style="font-size:10px">${competitors}</td></tr>`;
+  });
+  h+=`</tbody></table></div>`;
+
+  // Key Takeaways
+  const topBrand=brands[0];
+  const bottomBrand=brands.length>1?brands[brands.length-1]:null;
+  const visGap=topBrand&&bottomBrand?Math.round((topBrand.visibility_pct-bottomBrand.visibility_pct)*10)/10:0;
+  h+=`<div class="rs"><h3>Key Takeaways</h3><ul class="tk">`;
+  if(D.leader&&D.leader_gap>0){
+    h+=`<li><b>${esc(D.leader.brand_name)}</b> leads overall visibility at ${pf(D.leader.visibility_pct)}, ${D.leader_gap}% ahead of ${esc(s.brand_name)} at ${pf(t.visibility_pct)}.</li>`;
+  } else {
+    h+=`<li><b>${esc(s.brand_name)}</b> leads overall visibility at ${pf(t.visibility_pct)}.</li>`;
+  }
+  h+=`<li><b>${esc(s.brand_name)}</b> commands ${pf(t.market_share_pct)} market share with ${t.mention_count} mentions.</li>`;
+  h+=`<li>${D.brands_tracked} brands tracked across ${D.models.length} AI platforms and ${D.total_prompts} prompts over ${D.total_conversations} total conversations.</li>`;
+  if(visGap>0) h+=`<li>A ${visGap}% visibility gap separates the top brand from ${esc(bottomBrand.brand_name)} at ${pf(bottomBrand.visibility_pct)}.</li>`;
+  const repScore=Math.round(((t.avg_sentiment+1)/2)*100);
+  h+=`<li><b>${esc(s.brand_name)}</b> has a reputation score of ${repScore}/100, indicating ${repScore>=60?'positive':'mixed'} brand perception across AI platforms.</li>`;
+  h+=`<li>Lower-visibility brands should target niche prompts where competition is thinner to build topical authority.</li>`;
+  h+=`</ul></div>`;
+
+  // Methodology
+  h+=`<div class="meth"><b>Methodology</b> — Data across ${D.models.length} AI platforms (${D.models.map(m=>mn(m)).join(', ')}), ${D.total_prompts} prompts, ${D.total_conversations} conversations. Visibility = appearances / total conversations. Market Share = brand mentions / total brand mentions. Reputation scored 0–100 (50=neutral). Report generated on ${now.getMonth()+1}/${now.getDate()}/${now.getFullYear()}.</div>`;
+  h+=`</div>`; // end page 3
+
+  document.getElementById('report').innerHTML=h;
+}
+
+async function dlPDF(){
+  const pages=document.querySelectorAll('.page');
+  if(!pages.length)return;
+  const{jsPDF}=window.jspdf;
+  const pdf=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
+  const pw=210,ph=297;
+  for(let i=0;i<pages.length;i++){
+    const canvas=await html2canvas(pages[i],{scale:2.5,useCORS:true,backgroundColor:'#ffffff'});
+    const imgW=pw,imgH=(canvas.height*pw)/canvas.width;
+    const imgData=canvas.toDataURL('image/jpeg',0.92);
+    let yOff=0;
+    while(yOff<imgH){
+      if(i>0||yOff>0)pdf.addPage();
+      pdf.addImage(imgData,'JPEG',0,-yOff,imgW,imgH);
+      yOff+=ph;
+    }
+  }
+  const brand=currentBrandName||document.getElementById('brand').value.trim()||'Report';
+  pdf.save(`AI Visibility Report - ${brand}.pdf`);
+}
+
+function dlCSV(){
+  if(currentScanId) window.open('/api/scan/'+currentScanId+'/csv','_blank');
+}
+
+function copyLink(){
+  if(!currentScanId) return;
+  const url=window.location.origin+'/report/'+currentScanId;
+  navigator.clipboard.writeText(url).then(()=>{
+    const btn=document.querySelector('.fb-btn.fb-new:nth-child(3)');
+    const orig=btn.innerHTML;btn.innerHTML='&#10003; Copied!';
+    setTimeout(()=>btn.innerHTML=orig,1500);
+  });
+}
+
+// Auto-load report from ?view=ID
+(function(){
+  const p=new URLSearchParams(window.location.search);
+  const viewId=p.get('view');
+  if(viewId){
+    loadReport(Number(viewId));
+    // Clean URL
+    history.replaceState(null,'','/');
+  }
+})();
+
+// Load past scans on start
+loadScans();
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# Exclude large HTML files with embedded base64 assets
+public/index.html
+
+# Exclude database files (large binaries)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Exclude build artifacts
+node_modules/
+package-lock.json
+
+# Exclude git worktrees (large copies of project, managed by Claude Code)
+.claude/worktrees/
