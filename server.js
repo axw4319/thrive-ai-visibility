@@ -20,6 +20,7 @@ app.use(express.urlencoded({ extended: false }));
 const ALLOWED_ORIGINS = new Set([
   'https://thriveagency.com',
   'https://www.thriveagency.com',
+  'https://get.thriveagency.com',         // Google Ads LPs (Astro on Render)
   ...(process.env.EXTRA_ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean),
 ]);
 app.use((req, res, next) => {
