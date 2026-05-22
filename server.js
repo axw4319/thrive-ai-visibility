@@ -91,6 +91,7 @@ function clientIp(req) {
 const PUBLIC_PATH_PREFIXES = [
   '/login',
   '/report/',
+  '/api/health',
   '/api/public/',
   '/api/scan/',           // status + report endpoints for shareable links
   '/ai-visibility-checker',
