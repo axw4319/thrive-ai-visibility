@@ -3,9 +3,8 @@ const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const db = require('./database');
-const { scrapeWebsite, analyzeWebsite } = require('./lib/scraper');
+const { scrapeWebsite, analyzeAndGeneratePrompts } = require('./lib/scraper');
 const { runTechnicalAudit } = require('./lib/technical-audit');
-const { generatePrompts } = require('./lib/prompt-generator');
 const { queryAll, getModelNames, clients } = require('./lib/ai-clients');
 const { extractBrands, extractBrandsBatch } = require('./lib/brand-extractor');
 const { calculateMetrics } = require('./lib/metrics-calculator');
@@ -146,10 +145,11 @@ async function runScan(scanId) {
       return null;
     });
 
-    // Step 2: Analyze website
-    console.log(`[SCAN ${scanId}] Analyzing website...`);
+    // Step 2: Analyze website + generate search prompts (one OpenAI call)
+    console.log(`[SCAN ${scanId}] Analyzing + generating prompts...`);
     db.updateScanStatus.run('analyzing', 'Analyzing website content...', scanId);
-    const profile = await analyzeWebsite(scraped, scan.brand_name);
+    const clusters = (scan.prompt_clusters || '').trim();
+    const { profile, prompts } = await analyzeAndGeneratePrompts(scraped, scan.brand_name, clusters);
     const industry = (profile.industry || '').toLowerCase().trim();
 
     // If scraper inferred a cleaner brand name, persist it
@@ -161,16 +161,9 @@ async function runScan(scanId) {
     db.updateScan.run(
       profile.industry || '', JSON.stringify(profile.services || []),
       profile.location || '', profile.target_market || '',
-      profile.summary || '', 'generating_prompts', 'Generating search prompts...', scanId
+      profile.summary || '', 'querying', 'Querying AI models...', scanId
     );
 
-    // Step 3: Generate prompts
-    // NOTE: we deliberately don't cache prompts by industry anymore — "Technology" is too broad
-    // a bucket (Dell sells laptops, Microsoft sells cloud — same "industry", radically different buyer prompts).
-    // Prompt gen is ~$0.001 per scan on gpt-4o-mini; worth it for brand-accurate prompts.
-    console.log(`[SCAN ${scanId}] Generating prompts...`);
-    const clusters = (scan.prompt_clusters || '').trim();
-    const prompts = await generatePrompts(profile, scan.brand_name, clusters);
     for (const p of prompts) {
       db.insertPrompt.run(scanId, p.prompt, p.category);
     }
@@ -275,8 +268,8 @@ async function runScan(scanId) {
     db.updateScanStatus.run('calculating', 'Calculating visibility metrics...', scanId);
     calculateMetrics(scanId);
 
-    // Wait for the parallel technical audit to finish (it started right after scrape)
-    await auditPromise;
+    // Technical audit (auditPromise) continues in the background — it's only needed
+    // for the gated full report, not the snippet, so we don't block completion on it.
 
     // Done
     db.completeScan.run(scanId);
@@ -339,7 +332,7 @@ app.post('/api/scan/start', (req, res) => {
   const result = db.createScan.run(brand_name, website_url, prompt_clusters || '');
   const scanId = result.lastInsertRowid;
 
-  // Gate the scan to caller-specified engines (e.g. ['google_ai_overview'])
+  // Gate the scan to caller-specified engines (e.g. ['google_ai_mode'])
   if (Array.isArray(engines) && engines.length > 0) {
     scanEngines.set(scanId, engines);
   }
