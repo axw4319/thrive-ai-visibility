@@ -292,6 +292,7 @@ async function runScan(scanId) {
 
   } catch (err) {
     console.error(`[SCAN ${scanId}] Error:`, err.message);
+    console.error(`[SCAN ${scanId}] Stack:`, err.stack);
     db.updateScanStatus.run('error', err.message, scanId);
   }
 }
