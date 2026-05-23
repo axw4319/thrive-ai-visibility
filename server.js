@@ -21,11 +21,19 @@ const ALLOWED_ORIGINS = new Set([
   'https://thriveagency.com',
   'https://www.thriveagency.com',
   'https://get.thriveagency.com',         // Google Ads LPs (Astro on Render)
+  'http://localhost:4321',                // Astro dev
+  'http://localhost:3000',
+  'http://localhost:5173',
   ...(process.env.EXTRA_ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean),
 ]);
+const ALLOWED_ORIGIN_PATTERNS = [
+  /^https:\/\/thrive-[a-z0-9-]+\.onrender\.com$/,  // Render previews
+  /^https:\/\/[a-z0-9-]+\.thriveagency\.com$/,     // any thriveagency subdomain
+];
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
+  const allowed = origin && (ALLOWED_ORIGINS.has(origin) || ALLOWED_ORIGIN_PATTERNS.some(re => re.test(origin)));
+  if (allowed) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -111,6 +119,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Health endpoint for Render
 app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
 
+// Per-scan engine selection (in-memory). Defaults to all clients if not set.
+const scanEngines = new Map();
+
 // Purge expired cache on startup
 db.purgeExpiredCache.run();
 
@@ -166,6 +177,14 @@ async function runScan(scanId) {
     console.log(`[SCAN ${scanId}] ${prompts.length} prompts ready`);
 
     // Step 4: Query AI models (with response cache)
+    // Filter clients to engines selected for this scan (defaults to all)
+    const selectedEngines = scanEngines.get(scanId);
+    const activeClients = selectedEngines && selectedEngines.length > 0
+      ? clients.filter(c => selectedEngines.includes(c.name))
+      : clients;
+    if (selectedEngines && activeClients.length === 0) {
+      throw new Error(`No matching engines for: ${selectedEngines.join(', ')}`);
+    }
     const savedPrompts = db.getPrompts.all(scanId);
     const total = savedPrompts.length;
 
@@ -180,7 +199,7 @@ async function runScan(scanId) {
 
       const fuzzyPrompt = findFuzzyMatch(p.prompt_text, db.db);
 
-      for (const client of clients) {
+      for (const client of activeClients) {
         let cached = db.getCachedResponse.get(p.prompt_text, client.name);
         if (!cached && fuzzyPrompt) {
           cached = db.getCachedResponse.get(fuzzyPrompt, client.name);
@@ -248,7 +267,7 @@ async function runScan(scanId) {
       db.updateScanStatus.run('querying', `Querying AI models — ${completedPrompts}/${total} prompts done`, scanId);
     }
 
-    db.updateScanStatus.run('querying', `Querying ${clients.length} AI models across ${total} prompts in parallel…`, scanId);
+    db.updateScanStatus.run('querying', `Querying ${activeClients.length} AI models across ${total} prompts in parallel…`, scanId);
     await Promise.all(savedPrompts.map((p, i) => processPrompt(p, i)));
 
     // Step 6: Calculate metrics
@@ -302,18 +321,70 @@ async function prewarmIndustry(industry, prompts) {
 
 // --- API Routes ---
 app.post('/api/scan/start', (req, res) => {
-  const { brand_name, prompt_clusters } = req.body;
-  let { website_url } = req.body;
-  if (!brand_name || !website_url) return res.status(400).json({ error: 'brand_name and website_url required' });
+  let { brand_name, prompt_clusters, engines, website_url } = req.body;
+  if (!website_url) return res.status(400).json({ error: 'website_url required' });
   if (!/^https?:\/\//i.test(website_url)) website_url = 'https://' + website_url;
+  // If brand_name wasn't provided, derive from domain (e.g. "thriveagency.com" -> "Thriveagency")
+  if (!brand_name) {
+    try {
+      const host = new URL(website_url).hostname.replace(/^www\./, '');
+      const base = host.split('.')[0].replace(/[-_]+/g, ' ').trim();
+      brand_name = base.charAt(0).toUpperCase() + base.slice(1);
+    } catch (e) {
+      return res.status(400).json({ error: 'invalid website_url' });
+    }
+  }
 
   const result = db.createScan.run(brand_name, website_url, prompt_clusters || '');
   const scanId = result.lastInsertRowid;
+
+  // Gate the scan to caller-specified engines (e.g. ['google_ai_overview'])
+  if (Array.isArray(engines) && engines.length > 0) {
+    scanEngines.set(scanId, engines);
+  }
 
   // Run async — don't await
   runScan(scanId);
 
   res.json({ scan_id: scanId, status: 'pending' });
+});
+
+// Snippet endpoint — teaser data only, used by gated LPs
+app.get('/api/scan/:id/snippet', (req, res) => {
+  const report = assembleReport(Number(req.params.id));
+  if (!report) return res.status(404).json({ error: 'Report not found' });
+
+  const target = report.target || { visibility_pct: 0, mention_count: 0, market_share_pct: 0 };
+  const topBrands = (report.metrics || []).slice(0, 10);
+  const targetNorm = (report.scan.brand_name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const competitorsAbove = topBrands
+    .filter(b => (b.normalized_name || '').toLowerCase() !== targetNorm)
+    .filter(b => (b.visibility_pct || 0) > (target.visibility_pct || 0))
+    .slice(0, 3)
+    .map(b => ({ name: b.brand_name, visibility_pct: b.visibility_pct }));
+
+  const totalPrompts = report.total_prompts || 0;
+  const samplePrompt = (report.prompt_results && report.prompt_results.length > 0)
+    ? report.prompt_results[0].prompt_text
+    : null;
+
+  res.json({
+    scan_id: report.scan.id,
+    brand_name: report.scan.brand_name,
+    website_url: report.scan.website_url,
+    industry: report.scan.industry || null,
+    engines_used: report.models || [],
+    target: {
+      visibility_pct: target.visibility_pct || 0,
+      mention_count: target.mention_count || 0,
+      market_share_pct: target.market_share_pct || 0,
+    },
+    prompts_tested: totalPrompts,
+    sample_prompt: samplePrompt,
+    competitors_above_you_count: competitorsAbove.length,
+    competitors_above_you_preview: competitorsAbove,
+    full_report_locked: true,
+  });
 });
 
 // ── Public endpoint: URL-only, rate-limited, logged for abuse review ──
