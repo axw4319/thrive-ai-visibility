@@ -214,15 +214,19 @@ async function runScan(scanId) {
       if (uncachedClients.length > 0) {
         console.log(`[SCAN ${scanId}] [${i+1}/${total}] Querying ${uncachedClients.map(c => c.name).join('+')}: "${promptSnip}..."`);
         const settled = await Promise.allSettled(
-          uncachedClients.map(client =>
-            client.query(p.prompt_text).then(
-              response => ({ model_name: client.name, response, fromCache: false }),
+          uncachedClients.map(client => {
+            const t0 = Date.now();
+            return client.query(p.prompt_text).then(
+              response => {
+                console.log(`[SCAN ${scanId}]   [${client.name}] ok in ${Date.now() - t0}ms (prompt ${i+1})`);
+                return { model_name: client.name, response, fromCache: false };
+              },
               err => {
-                console.error(`[SCAN ${scanId}]   [${client.name}] Error: ${err.message}`);
+                console.error(`[SCAN ${scanId}]   [${client.name}] Error in ${Date.now() - t0}ms: ${err.message}`);
                 return { model_name: client.name, response: null, error: err.message, fromCache: false };
               }
-            )
-          )
+            );
+          })
         );
         freshResults = settled.map(r => r.value);
       }
