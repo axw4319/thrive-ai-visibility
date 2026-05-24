@@ -6,7 +6,7 @@ const db = require('./database');
 const { scrapeWebsite, analyzeAndGeneratePrompts } = require('./lib/scraper');
 const { runTechnicalAudit } = require('./lib/technical-audit');
 const { queryAll, getModelNames, clients } = require('./lib/ai-clients');
-const { extractBrands, extractBrandsBatch } = require('./lib/brand-extractor');
+const { extractBrands, extractBrandsBatch, extractBrandsForScan } = require('./lib/brand-extractor');
 const { calculateMetrics } = require('./lib/metrics-calculator');
 const { assembleReport, assemblePublicReport } = require('./lib/report-data');
 const { findFuzzyMatch } = require('./lib/prompt-matcher');
@@ -121,6 +121,11 @@ app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
 // Per-scan engine selection (in-memory). Defaults to all clients if not set.
 const scanEngines = new Map();
 
+// Per-scan per-engine completion tracking for the status endpoint. Frontend
+// uses this to fill each engine's progress bar independently as that engine
+// returns. Shape: scanId -> {model_name: {done: N, total: M}}.
+const scanEngineProgress = new Map();
+
 // Purge expired cache on startup
 db.purgeExpiredCache.run();
 
@@ -181,11 +186,17 @@ async function runScan(scanId) {
     const savedPrompts = db.getPrompts.all(scanId);
     const total = savedPrompts.length;
 
-    // Kick off all prompts in parallel — each prompt internally queries its models in parallel
-    // Bounded by the slowest single prompt instead of the sum.
-    let completedPrompts = 0;
+    // Per-engine progress tracking — frontend reads this from /status and
+    // fills each engine's card bar independently as that engine finishes.
+    const engineProgress = {};
+    for (const c of activeClients) engineProgress[c.name] = { done: 0, total };
+    scanEngineProgress.set(scanId, engineProgress);
 
-    async function processPrompt(p, i) {
+    // Kick off all prompts in parallel — each prompt queries its models in
+    // parallel. We DEFER brand extraction to a single scan-wide call after
+    // all engines finish, instead of one extract per prompt (which serialized
+    // against OpenAI's rate limit and added 8-11s to the tail).
+    const promptResults = await Promise.all(savedPrompts.map(async (p, i) => {
       const promptSnip = p.prompt_text.slice(0, 50);
       const cachedResults = [];
       const uncachedClients = [];
@@ -203,8 +214,10 @@ async function runScan(scanId) {
             model_name: client.name,
             response: cached.response,
             brands: cached.brands_json ? JSON.parse(cached.brands_json) : null,
-            fromCache: true
+            fromCache: true,
           });
+          // Cached counts as "done" immediately
+          engineProgress[client.name].done++;
         } else {
           uncachedClients.push(client);
         }
@@ -219,10 +232,12 @@ async function runScan(scanId) {
             return client.query(p.prompt_text).then(
               response => {
                 console.log(`[SCAN ${scanId}]   [${client.name}] ok in ${Date.now() - t0}ms (prompt ${i+1})`);
+                engineProgress[client.name].done++;
                 return { model_name: client.name, response, fromCache: false };
               },
               err => {
                 console.error(`[SCAN ${scanId}]   [${client.name}] Error in ${Date.now() - t0}ms: ${err.message}`);
+                engineProgress[client.name].done++;
                 return { model_name: client.name, response: null, error: err.message, fromCache: false };
               }
             );
@@ -231,41 +246,47 @@ async function runScan(scanId) {
         freshResults = settled.map(r => r.value);
       }
 
-      const allResults = [...cachedResults, ...freshResults];
+      return { p, allResults: [...cachedResults, ...freshResults] };
+    }));
 
-      // Persist cached results (brands already extracted from previous scan)
-      for (const r of allResults.filter(r => r.fromCache && r.brands && r.response)) {
+    db.updateScanStatus.run('querying', `Extracting brand mentions…`, scanId);
+
+    // Step 4b: ONE scan-wide brand-extraction call across every uncached
+    // (prompt, model) pair. Replaces N per-prompt calls that previously
+    // serialized against OpenAI's TPM limit and added 8-11s to the tail.
+    const extractInput = promptResults
+      .map(({ p, allResults }) => ({
+        prompt_id: p.id,
+        prompt_text: p.prompt_text,
+        responses: allResults.filter(r => !r.fromCache && r.response).map(r => ({ model_name: r.model_name, response: r.response })),
+      }))
+      .filter(pb => pb.responses.length > 0);
+
+    let brandsByPromptModel = {};
+    if (extractInput.length > 0) {
+      brandsByPromptModel = await extractBrandsForScan(extractInput);
+    }
+
+    // Step 4c: Persist everything (cached + fresh) to the DB
+    for (const { p, allResults } of promptResults) {
+      for (const r of allResults) {
+        if (!r.response) {
+          db.insertResponse.run(p.id, r.model_name, null);
+          continue;
+        }
         const respId = db.insertResponse.run(p.id, r.model_name, r.response).lastInsertRowid;
-        for (const b of r.brands) {
+        let brands;
+        if (r.fromCache) {
+          brands = r.brands || [];
+        } else {
+          brands = (brandsByPromptModel[p.id] && brandsByPromptModel[p.id][r.model_name]) || [];
+          db.upsertCachedResponse.run(p.prompt_text, r.model_name, r.response, JSON.stringify(brands));
+        }
+        for (const b of brands) {
           db.insertMention.run(respId, b.brand_name, b.normalized_name, b.position, b.context_snippet, b.sentiment_score);
         }
       }
-
-      // Batch-extract brands from uncached responses (one API call for all models on this prompt)
-      const uncachedWithResponses = allResults.filter(r => !r.fromCache && r.response);
-      if (uncachedWithResponses.length > 0) {
-        const brandsByModel = await extractBrandsBatch(uncachedWithResponses, p.prompt_text);
-        for (const r of uncachedWithResponses) {
-          const respId = db.insertResponse.run(p.id, r.model_name, r.response).lastInsertRowid;
-          const brands = brandsByModel[r.model_name] || [];
-          db.upsertCachedResponse.run(p.prompt_text, r.model_name, r.response, JSON.stringify(brands));
-          for (const b of brands) {
-            db.insertMention.run(respId, b.brand_name, b.normalized_name, b.position, b.context_snippet, b.sentiment_score);
-          }
-        }
-      }
-
-      // Record empty responses (errors) so they're tracked
-      for (const r of allResults.filter(r => !r.fromCache && !r.response)) {
-        db.insertResponse.run(p.id, r.model_name, null);
-      }
-
-      completedPrompts++;
-      db.updateScanStatus.run('querying', `Querying AI models — ${completedPrompts}/${total} prompts done`, scanId);
     }
-
-    db.updateScanStatus.run('querying', `Querying ${activeClients.length} AI models across ${total} prompts in parallel…`, scanId);
-    await Promise.all(savedPrompts.map((p, i) => processPrompt(p, i)));
 
     // Step 6: Calculate metrics
     console.log(`[SCAN ${scanId}] Calculating metrics...`);
@@ -291,6 +312,10 @@ async function runScan(scanId) {
     console.error(`[SCAN ${scanId}] Error:`, err.message);
     console.error(`[SCAN ${scanId}] Stack:`, err.stack);
     db.updateScanStatus.run('error', err.message, scanId);
+  } finally {
+    // Drop per-engine progress after a short delay so any in-flight status
+    // polls still see the final state, then free the memory.
+    setTimeout(() => scanEngineProgress.delete(scanId), 30_000);
   }
 }
 
@@ -465,7 +490,8 @@ app.get('/api/admin/scan-log', (req, res) => {
 app.get('/api/scan/:id/status', (req, res) => {
   const scan = db.getScan.get(req.params.id);
   if (!scan) return res.status(404).json({ error: 'Scan not found' });
-  res.json({ id: scan.id, status: scan.status, progress: scan.progress, brand_name: scan.brand_name });
+  const engines = scanEngineProgress.get(Number(req.params.id)) || null;
+  res.json({ id: scan.id, status: scan.status, progress: scan.progress, brand_name: scan.brand_name, engines });
 });
 
 app.get('/api/scan/:id/report', (req, res) => {
