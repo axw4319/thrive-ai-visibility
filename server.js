@@ -192,10 +192,13 @@ async function runScan(scanId) {
     for (const c of activeClients) engineProgress[c.name] = { done: 0, total };
     scanEngineProgress.set(scanId, engineProgress);
 
-    // Kick off all prompts in parallel — each prompt queries its models in
-    // parallel. We DEFER brand extraction to a single scan-wide call after
-    // all engines finish, instead of one extract per prompt (which serialized
-    // against OpenAI's rate limit and added 8-11s to the tail).
+    // Per-prompt processing: each prompt queries engines in parallel, then
+    // extracts brands from the engine responses. All prompts run in parallel,
+    // so we get max(prompt_time) wall clock, not sum.
+    //
+    // We tried merging extraction into one scan-wide call — turned out a
+    // single ~18KB-input gpt-4o-mini extract took ~50s, MUCH worse than 3
+    // parallel ~4s per-prompt extracts. So we kept it per-prompt.
     const promptResults = await Promise.all(savedPrompts.map(async (p, i) => {
       const promptSnip = p.prompt_text.slice(0, 50);
       const cachedResults = [];
@@ -246,29 +249,24 @@ async function runScan(scanId) {
         freshResults = settled.map(r => r.value);
       }
 
-      return { p, allResults: [...cachedResults, ...freshResults] };
+      const allResults = [...cachedResults, ...freshResults];
+
+      // Per-prompt brand extraction (one OpenAI call per prompt — they run
+      // in parallel across prompts because each processPrompt promise is
+      // awaited inside Promise.all).
+      const uncachedWithResponses = allResults.filter(r => !r.fromCache && r.response);
+      let brandsByModel = {};
+      if (uncachedWithResponses.length > 0) {
+        const t0 = Date.now();
+        brandsByModel = await extractBrandsBatch(uncachedWithResponses, p.prompt_text);
+        console.log(`[SCAN ${scanId}]   [extract] prompt ${i+1} in ${Date.now() - t0}ms`);
+      }
+
+      return { p, allResults, brandsByModel };
     }));
 
-    db.updateScanStatus.run('querying', `Extracting brand mentions…`, scanId);
-
-    // Step 4b: ONE scan-wide brand-extraction call across every uncached
-    // (prompt, model) pair. Replaces N per-prompt calls that previously
-    // serialized against OpenAI's TPM limit and added 8-11s to the tail.
-    const extractInput = promptResults
-      .map(({ p, allResults }) => ({
-        prompt_id: p.id,
-        prompt_text: p.prompt_text,
-        responses: allResults.filter(r => !r.fromCache && r.response).map(r => ({ model_name: r.model_name, response: r.response })),
-      }))
-      .filter(pb => pb.responses.length > 0);
-
-    let brandsByPromptModel = {};
-    if (extractInput.length > 0) {
-      brandsByPromptModel = await extractBrandsForScan(extractInput);
-    }
-
-    // Step 4c: Persist everything (cached + fresh) to the DB
-    for (const { p, allResults } of promptResults) {
+    // Persist all results (cached + fresh) to the DB
+    for (const { p, allResults, brandsByModel } of promptResults) {
       for (const r of allResults) {
         if (!r.response) {
           db.insertResponse.run(p.id, r.model_name, null);
@@ -279,7 +277,7 @@ async function runScan(scanId) {
         if (r.fromCache) {
           brands = r.brands || [];
         } else {
-          brands = (brandsByPromptModel[p.id] && brandsByPromptModel[p.id][r.model_name]) || [];
+          brands = brandsByModel[r.model_name] || [];
           db.upsertCachedResponse.run(p.prompt_text, r.model_name, r.response, JSON.stringify(brands));
         }
         for (const b of brands) {
