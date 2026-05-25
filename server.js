@@ -126,6 +126,20 @@ const scanEngines = new Map();
 // returns. Shape: scanId -> {model_name: {done: N, total: M}}.
 const scanEngineProgress = new Map();
 
+// Engine-level deadline. Any single engine call exceeding this fails the
+// scan's slowest-link calculation — we'd rather show 3/4 cards with real
+// data than wait 11s on one Gemini outlier. The underlying fetch keeps
+// running in the background but its result is discarded.
+const ENGINE_TIMEOUT_MS = 5000;
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 // Purge expired cache on startup
 db.purgeExpiredCache.run();
 
@@ -232,7 +246,7 @@ async function runScan(scanId) {
         const settled = await Promise.allSettled(
           uncachedClients.map(client => {
             const t0 = Date.now();
-            return client.query(p.prompt_text).then(
+            return withTimeout(client.query(p.prompt_text), ENGINE_TIMEOUT_MS, client.name).then(
               response => {
                 console.log(`[SCAN ${scanId}]   [${client.name}] ok in ${Date.now() - t0}ms (prompt ${i+1})`);
                 engineProgress[client.name].done++;
