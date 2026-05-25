@@ -248,14 +248,16 @@ async function runScan(scanId) {
             const t0 = Date.now();
             return withTimeout(client.query(p.prompt_text), ENGINE_TIMEOUT_MS, client.name).then(
               response => {
-                console.log(`[SCAN ${scanId}]   [${client.name}] ok in ${Date.now() - t0}ms (prompt ${i+1})`);
+                const latency = Date.now() - t0;
+                console.log(`[SCAN ${scanId}]   [${client.name}] ok in ${latency}ms (prompt ${i+1})`);
                 engineProgress[client.name].done++;
-                return { model_name: client.name, response, fromCache: false };
+                return { model_name: client.name, response, latency_ms: latency, fromCache: false };
               },
               err => {
-                console.error(`[SCAN ${scanId}]   [${client.name}] Error in ${Date.now() - t0}ms: ${err.message}`);
+                const latency = Date.now() - t0;
+                console.error(`[SCAN ${scanId}]   [${client.name}] Error in ${latency}ms: ${err.message}`);
                 engineProgress[client.name].done++;
-                return { model_name: client.name, response: null, error: err.message, fromCache: false };
+                return { model_name: client.name, response: null, latency_ms: latency, error: err.message, fromCache: false };
               }
             );
           })
@@ -279,14 +281,17 @@ async function runScan(scanId) {
       return { p, allResults, brandsByModel };
     }));
 
-    // Persist all results (cached + fresh) to the DB
+    // Persist all results (cached + fresh) to the DB. latency_ms is null
+    // for cache hits (instant lookup) and the actual measured wall-time for
+    // fresh API calls; error_message is null on success.
     for (const { p, allResults, brandsByModel } of promptResults) {
       for (const r of allResults) {
         if (!r.response) {
-          db.insertResponse.run(p.id, r.model_name, null);
+          db.insertResponse.run(p.id, r.model_name, null, r.latency_ms ?? null, r.error || null);
           continue;
         }
-        const respId = db.insertResponse.run(p.id, r.model_name, r.response).lastInsertRowid;
+        const latency = r.fromCache ? null : (r.latency_ms ?? null);
+        const respId = db.insertResponse.run(p.id, r.model_name, r.response, latency, null).lastInsertRowid;
         let brands;
         if (r.fromCache) {
           brands = r.brands || [];
@@ -354,11 +359,59 @@ async function prewarmIndustry(industry, prompts) {
   if (warmed > 0) console.log(`[PREWARM] Cached ${warmed} new responses for "${industry}"`);
 }
 
+// LP-facing scan endpoint. CORS already locks the Origin to Thrive domains
+// for browser callers, but curl/scripts can spoof Origin headers so we also
+// rate-limit by IP and log every attempt to scan_log for abuse review.
+//
+// Rate limits (per-IP/day are the abuse floor; per-URL/day catches the
+// "scan everyone's domain in a loop" pattern):
+//   - 5 scans/hour/IP
+//   - 20 scans/day/IP
+//   - 3 scans/day/URL (subsequent same-URL hits serve the cached scan)
+const SCAN_RATE = {
+  perIpPerHour: Number(process.env.SCAN_PER_IP_HOUR || 5),
+  perIpPerDay:  Number(process.env.SCAN_PER_IP_DAY  || 20),
+  perUrlPerDay: Number(process.env.SCAN_PER_URL_DAY || 3),
+};
+
 // --- API Routes ---
 app.post('/api/scan/start', (req, res) => {
+  const ip = clientIp(req);
+  const ua = (req.headers['user-agent'] || '').slice(0, 400);
+  const referer = (req.headers.referer || '').slice(0, 400);
+  const origin  = (req.headers.origin  || '').slice(0, 400);
+
   let { brand_name, prompt_clusters, engines, website_url } = req.body;
-  if (!website_url) return res.status(400).json({ error: 'website_url required' });
+  if (!website_url) {
+    db.insertScanLog.run(ip, ua, String(req.body?.website_url || ''), referer, origin, null, null, 0, 'missing_url');
+    return res.status(400).json({ error: 'website_url required' });
+  }
   if (!/^https?:\/\//i.test(website_url)) website_url = 'https://' + website_url;
+
+  // Rate limit checks before we spin up any AI work
+  const ipHour = db.countRecentByIp.get(ip, '-1 hour').c;
+  const ipDay  = db.countRecentByIp.get(ip, '-24 hours').c;
+  const urlDay = db.countRecentByUrl.get(website_url, '-24 hours').c;
+
+  if (ipHour >= SCAN_RATE.perIpPerHour) {
+    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_ip_hour');
+    return res.status(429).json({ error: `Too many scans this hour. Please wait (${SCAN_RATE.perIpPerHour}/hour).` });
+  }
+  if (ipDay >= SCAN_RATE.perIpPerDay) {
+    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_ip_day');
+    return res.status(429).json({ error: `Daily scan limit reached (${SCAN_RATE.perIpPerDay}/day). Try tomorrow.` });
+  }
+  if (urlDay >= SCAN_RATE.perUrlPerDay) {
+    // Same URL hit too many times today — serve the most recent cached scan if we have one
+    const recent = db.findRecentCompleteScanByUrl.get(website_url);
+    if (recent) {
+      db.insertScanLog.run(ip, ua, website_url, referer, origin, null, recent.id, 1, 'served_cached');
+      return res.json({ scan_id: recent.id, status: 'cached' });
+    }
+    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_url_day');
+    return res.status(429).json({ error: `This URL was scanned recently. Try a different one.` });
+  }
+
   // If brand_name wasn't provided, derive from domain (e.g. "thriveagency.com" -> "Thriveagency")
   if (!brand_name) {
     try {
@@ -366,6 +419,7 @@ app.post('/api/scan/start', (req, res) => {
       const base = host.split('.')[0].replace(/[-_]+/g, ' ').trim();
       brand_name = base.charAt(0).toUpperCase() + base.slice(1);
     } catch (e) {
+      db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'invalid_url');
       return res.status(400).json({ error: 'invalid website_url' });
     }
   }
@@ -377,6 +431,8 @@ app.post('/api/scan/start', (req, res) => {
   if (Array.isArray(engines) && engines.length > 0) {
     scanEngines.set(scanId, engines);
   }
+
+  db.insertScanLog.run(ip, ua, website_url, referer, origin, null, scanId, 1, 'new_scan');
 
   // Run async — don't await
   runScan(scanId);

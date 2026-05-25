@@ -114,6 +114,18 @@ try {
   }
 } catch {}
 
+// Add latency_ms + error_message to responses (idempotent — preserves
+// historical rows that won't have a latency, NULL is fine for those).
+try {
+  const cols = db.prepare("PRAGMA table_info(responses)").all();
+  if (!cols.find(c => c.name === 'latency_ms')) {
+    db.exec("ALTER TABLE responses ADD COLUMN latency_ms INTEGER");
+  }
+  if (!cols.find(c => c.name === 'error_message')) {
+    db.exec("ALTER TABLE responses ADD COLUMN error_message TEXT");
+  }
+} catch {}
+
 // Helpers
 const createScan = db.prepare(`INSERT INTO scans (brand_name, website_url, prompt_clusters, status) VALUES (?, ?, ?, 'pending')`);
 const updateScan = db.prepare(`UPDATE scans SET industry=?, services=?, location=?, target_market=?, website_summary=?, status=?, progress=? WHERE id=?`);
@@ -126,7 +138,7 @@ const deleteScan = db.prepare(`DELETE FROM scans WHERE id=?`);
 const insertPrompt = db.prepare(`INSERT INTO prompts (scan_id, prompt_text, category) VALUES (?, ?, ?)`);
 const getPrompts = db.prepare(`SELECT * FROM prompts WHERE scan_id=?`);
 
-const insertResponse = db.prepare(`INSERT INTO responses (prompt_id, model_name, raw_response) VALUES (?, ?, ?)`);
+const insertResponse = db.prepare(`INSERT INTO responses (prompt_id, model_name, raw_response, latency_ms, error_message) VALUES (?, ?, ?, ?, ?)`);
 const getResponses = db.prepare(`SELECT r.*, p.prompt_text, p.category FROM responses r JOIN prompts p ON r.prompt_id=p.id WHERE p.scan_id=?`);
 
 const insertMention = db.prepare(`INSERT INTO brand_mentions (response_id, brand_name, normalized_name, position, context_snippet, sentiment_score) VALUES (?, ?, ?, ?, ?, ?)`);
