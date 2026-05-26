@@ -10,6 +10,7 @@ const { extractBrands, extractBrandsBatch, extractBrandsForScan } = require('./l
 const { calculateMetrics } = require('./lib/metrics-calculator');
 const { assembleReport, assemblePublicReport } = require('./lib/report-data');
 const { findFuzzyMatch } = require('./lib/prompt-matcher');
+const { notifyScanSubmitted } = require('./lib/email-notify');
 
 const app = express();
 app.use(express.json());
@@ -381,10 +382,21 @@ app.post('/api/scan/start', (req, res) => {
   const referer = (req.headers.referer || '').slice(0, 400);
   const origin  = (req.headers.origin  || '').slice(0, 400);
 
+  // Ad-attribution: GCLID + UTMs captured client-side (utm-capture.js), sent in body.
+  const gclid = (req.body?.gclid || '').slice(0, 200) || null;
+  const utm = {
+    source:   (req.body?.utm_source   || '').slice(0, 200) || null,
+    medium:   (req.body?.utm_medium   || '').slice(0, 200) || null,
+    campaign: (req.body?.utm_campaign || '').slice(0, 200) || null,
+    content:  (req.body?.utm_content  || '').slice(0, 200) || null,
+    term:     (req.body?.utm_term     || '').slice(0, 200) || null,
+  };
+  const adCols = [gclid, utm.source, utm.medium, utm.campaign, utm.content, utm.term];
+
   let { brand_name, prompt_clusters, engines, website_url } = req.body;
   if (!website_url) {
-    db.insertScanLog.run(ip, ua, String(req.body?.website_url || ''), referer, origin, null, null, 0, 'missing_url');
-    return res.status(400).json({ error: 'website_url required' });
+    db.insertScanLog.run(ip, ua, String(req.body?.website_url || ''), referer, origin, null, null, 0, 'missing_url', ...adCols);
+    return res.status(400).json({ error: 'Please enter your website domain to scan (e.g. yourcompany.com).' });
   }
   if (!/^https?:\/\//i.test(website_url)) website_url = 'https://' + website_url;
 
@@ -394,21 +406,21 @@ app.post('/api/scan/start', (req, res) => {
   const urlDay = db.countRecentByUrl.get(website_url, '-24 hours').c;
 
   if (ipHour >= SCAN_RATE.perIpPerHour) {
-    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_ip_hour');
+    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_ip_hour', ...adCols);
     return res.status(429).json({ error: `Too many scans this hour. Please wait (${SCAN_RATE.perIpPerHour}/hour).` });
   }
   if (ipDay >= SCAN_RATE.perIpPerDay) {
-    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_ip_day');
+    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_ip_day', ...adCols);
     return res.status(429).json({ error: `Daily scan limit reached (${SCAN_RATE.perIpPerDay}/day). Try tomorrow.` });
   }
   if (urlDay >= SCAN_RATE.perUrlPerDay) {
     // Same URL hit too many times today — serve the most recent cached scan if we have one
     const recent = db.findRecentCompleteScanByUrl.get(website_url);
     if (recent) {
-      db.insertScanLog.run(ip, ua, website_url, referer, origin, null, recent.id, 1, 'served_cached');
+      db.insertScanLog.run(ip, ua, website_url, referer, origin, null, recent.id, 1, 'served_cached', ...adCols);
       return res.json({ scan_id: recent.id, status: 'cached' });
     }
-    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_url_day');
+    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_url_day', ...adCols);
     return res.status(429).json({ error: `This URL was scanned recently. Try a different one.` });
   }
 
@@ -419,7 +431,7 @@ app.post('/api/scan/start', (req, res) => {
       const base = host.split('.')[0].replace(/[-_]+/g, ' ').trim();
       brand_name = base.charAt(0).toUpperCase() + base.slice(1);
     } catch (e) {
-      db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'invalid_url');
+      db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'invalid_url', ...adCols);
       return res.status(400).json({ error: 'invalid website_url' });
     }
   }
@@ -432,7 +444,13 @@ app.post('/api/scan/start', (req, res) => {
     scanEngines.set(scanId, engines);
   }
 
-  db.insertScanLog.run(ip, ua, website_url, referer, origin, null, scanId, 1, 'new_scan');
+  db.insertScanLog.run(ip, ua, website_url, referer, origin, null, scanId, 1, 'new_scan', ...adCols);
+
+  // Notify Aaron / SDR pool about the new scan (fire-and-forget, never blocks response).
+  notifyScanSubmitted({
+    scanId, websiteUrl: website_url, brand: brand_name,
+    ip, ua, referer, origin, gclid, utm,
+  }).catch(err => console.error('[scan-notify] failed:', err.message));
 
   // Run async — don't await
   runScan(scanId);
@@ -500,10 +518,21 @@ app.post('/api/public/scan/start', async (req, res) => {
   const referer = (req.headers.referer || '').slice(0, 400);
   const origin  = (req.headers.origin || '').slice(0, 400);
 
+  // Ad-attribution: GCLID + UTMs captured client-side (utm-capture.js), sent in body.
+  const gclid = (req.body?.gclid || '').slice(0, 200) || null;
+  const utm = {
+    source:   (req.body?.utm_source   || '').slice(0, 200) || null,
+    medium:   (req.body?.utm_medium   || '').slice(0, 200) || null,
+    campaign: (req.body?.utm_campaign || '').slice(0, 200) || null,
+    content:  (req.body?.utm_content  || '').slice(0, 200) || null,
+    term:     (req.body?.utm_term     || '').slice(0, 200) || null,
+  };
+  const adCols = [gclid, utm.source, utm.medium, utm.campaign, utm.content, utm.term];
+
   const website_url = normalizeUrl(req.body?.website_url);
   if (!website_url) {
-    db.insertScanLog.run(ip, ua, String(req.body?.website_url || ''), referer, origin, null, null, 0, 'invalid_url');
-    return res.status(400).json({ error: 'Please enter a valid website URL.' });
+    db.insertScanLog.run(ip, ua, String(req.body?.website_url || ''), referer, origin, null, null, 0, 'invalid_url', ...adCols);
+    return res.status(400).json({ error: 'Please enter your website domain to scan (e.g. yourcompany.com).' });
   }
 
   // Rate limit: per-IP hour/day, per-URL day
@@ -512,28 +541,28 @@ app.post('/api/public/scan/start', async (req, res) => {
   const urlDay = db.countRecentByUrl.get(website_url, '-24 hours').c;
 
   if (ipHour >= PUBLIC_RATE.perIpPerHour) {
-    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_ip_hour');
+    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_ip_hour', ...adCols);
     return res.status(429).json({ error: `Too many scans — please wait a bit (${PUBLIC_RATE.perIpPerHour}/hour limit).` });
   }
   if (ipDay >= PUBLIC_RATE.perIpPerDay) {
-    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_ip_day');
+    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_ip_day', ...adCols);
     return res.status(429).json({ error: `Daily limit reached (${PUBLIC_RATE.perIpPerDay}/day). Try again tomorrow.` });
   }
   if (urlDay >= PUBLIC_RATE.perUrlPerDay) {
     // Serve cached scan for same URL if one exists recently
     const recent = db.findRecentCompleteScanByUrl.get(website_url);
     if (recent) {
-      db.insertScanLog.run(ip, ua, website_url, referer, origin, null, recent.id, 1, 'served_cached');
+      db.insertScanLog.run(ip, ua, website_url, referer, origin, null, recent.id, 1, 'served_cached', ...adCols);
       return res.json({ scan_id: recent.id, status: 'cached' });
     }
-    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_url_day');
+    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, null, 0, 'rate_limit_url_day', ...adCols);
     return res.status(429).json({ error: `This URL was already scanned recently. Try again tomorrow.` });
   }
 
   // URL dedupe: serve cached scan within 30 days for the same URL
   const cached = db.findRecentCompleteScanByUrl.get(website_url);
   if (cached) {
-    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, cached.id, 1, 'served_cached_30d');
+    db.insertScanLog.run(ip, ua, website_url, referer, origin, null, cached.id, 1, 'served_cached_30d', ...adCols);
     return res.json({ scan_id: cached.id, status: 'cached' });
   }
 
@@ -543,7 +572,14 @@ app.post('/api/public/scan/start', async (req, res) => {
   const result = db.createScan.run(placeholderBrand, website_url, '');
   const scanId = result.lastInsertRowid;
 
-  db.insertScanLog.run(ip, ua, website_url, referer, origin, null, scanId, 1, 'new_scan');
+  db.insertScanLog.run(ip, ua, website_url, referer, origin, null, scanId, 1, 'new_scan', ...adCols);
+
+  // Notify Aaron / SDR pool about the new scan (fire-and-forget, never blocks response).
+  notifyScanSubmitted({
+    scanId, websiteUrl: website_url, brand: placeholderBrand,
+    ip, ua, referer, origin, gclid, utm,
+  }).catch(err => console.error('[scan-notify] failed:', err.message));
+
   runScan(scanId);
   res.json({ scan_id: scanId, status: 'pending' });
 });

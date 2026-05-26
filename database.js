@@ -126,6 +126,17 @@ try {
   }
 } catch {}
 
+// Ad-tracking columns on scan_log for nurture-lead attribution (added 2026-05-26).
+try {
+  const cols = db.prepare("PRAGMA table_info(scan_log)").all();
+  const adCols = ['gclid', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'];
+  for (const c of adCols) {
+    if (!cols.find(x => x.name === c)) {
+      db.exec(`ALTER TABLE scan_log ADD COLUMN ${c} TEXT`);
+    }
+  }
+} catch {}
+
 // Helpers
 const createScan = db.prepare(`INSERT INTO scans (brand_name, website_url, prompt_clusters, status) VALUES (?, ?, ?, 'pending')`);
 const updateScan = db.prepare(`UPDATE scans SET industry=?, services=?, location=?, target_market=?, website_summary=?, status=?, progress=? WHERE id=?`);
@@ -157,8 +168,8 @@ const purgeExpiredCache = db.prepare(`DELETE FROM response_cache WHERE created_a
 const getCachedPrompts = db.prepare(`SELECT prompts_json FROM prompt_cache WHERE industry=? AND created_at > datetime('now', '-7 days')`);
 const upsertCachedPrompts = db.prepare(`INSERT INTO prompt_cache (industry, prompts_json) VALUES (?, ?) ON CONFLICT(industry) DO UPDATE SET prompts_json=excluded.prompts_json, created_at=CURRENT_TIMESTAMP`);
 
-// Abuse / usage tracking
-const insertScanLog = db.prepare(`INSERT INTO scan_log (ip_address, user_agent, website_url, referer, origin, email, scan_id, accepted, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+// Abuse / usage tracking — extended 2026-05-26 with GCLID + UTMs for nurture-lead attribution
+const insertScanLog = db.prepare(`INSERT INTO scan_log (ip_address, user_agent, website_url, referer, origin, email, scan_id, accepted, reason, gclid, utm_source, utm_medium, utm_campaign, utm_content, utm_term) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 const countRecentByIp   = db.prepare(`SELECT COUNT(*) AS c FROM scan_log WHERE ip_address = ? AND accepted = 1 AND created_at > datetime('now', ?)`);
 const countRecentByUrl  = db.prepare(`SELECT COUNT(*) AS c FROM scan_log WHERE website_url = ? AND accepted = 1 AND created_at > datetime('now', ?)`);
 const getRecentScanLogs = db.prepare(`SELECT * FROM scan_log ORDER BY created_at DESC LIMIT ?`);
