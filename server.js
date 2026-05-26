@@ -11,6 +11,7 @@ const { calculateMetrics } = require('./lib/metrics-calculator');
 const { assembleReport, assemblePublicReport } = require('./lib/report-data');
 const { findFuzzyMatch } = require('./lib/prompt-matcher');
 const { notifyScanSubmitted } = require('./lib/email-notify');
+const { pushScanToZoho } = require('./lib/zoho-nurture');
 
 const app = express();
 app.use(express.json());
@@ -452,6 +453,13 @@ app.post('/api/scan/start', (req, res) => {
     ip, ua, referer, origin, gclid, utm,
   }).catch(err => console.error('[scan-notify] failed:', err.message));
 
+  // Push as Zoho Nurture/Inquiry lead with placeholder email (fire-and-forget).
+  // When real form fill happens later, the form pipeline upserts the same Lead.
+  pushScanToZoho({
+    scanId, websiteUrl: website_url, brand: brand_name,
+    ip, ua, referer, origin, gclid, utm,
+  }).catch(err => console.error('[zoho-nurture] failed:', err.message));
+
   // Run async — don't await
   runScan(scanId);
 
@@ -579,6 +587,11 @@ app.post('/api/public/scan/start', async (req, res) => {
     scanId, websiteUrl: website_url, brand: placeholderBrand,
     ip, ua, referer, origin, gclid, utm,
   }).catch(err => console.error('[scan-notify] failed:', err.message));
+
+  pushScanToZoho({
+    scanId, websiteUrl: website_url, brand: placeholderBrand,
+    ip, ua, referer, origin, gclid, utm,
+  }).catch(err => console.error('[zoho-nurture] failed:', err.message));
 
   runScan(scanId);
   res.json({ scan_id: scanId, status: 'pending' });
