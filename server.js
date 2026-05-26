@@ -647,19 +647,20 @@ app.get('/api/scan/:id/csv', (req, res) => {
   res.send(csv);
 });
 
-// Shareable report HTML page
+// Shareable report HTML page — Thrive-branded (also used as input to the
+// /api/url-to-pdf gateway on thrive-report-app for branded MC PDFs).
+const { renderBrandedReportHTML } = require('./lib/branded-report');
 app.get('/report/:id', (req, res) => {
   const report = assembleReport(Number(req.params.id));
   if (!report) return res.status(404).send('Report not found');
-  // Serve the main page with auto-load script
-  res.send(`<!DOCTYPE html>
-<html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Visibility Report - ${report.scan.brand_name}</title>
-<meta property="og:title" content="AI Visibility Report - ${report.scan.brand_name}">
-<meta property="og:description" content="${report.scan.brand_name} AI visibility: ${report.target.visibility_pct}% across ${report.models.length} AI platforms">
+  // ?spa=1 keeps the legacy admin-SPA view available for cases that need it
+  if (req.query.spa === '1') {
+    return res.send(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>AI Visibility Report - ${report.scan.brand_name}</title>
 <script>window.__REPORT_DATA=${JSON.stringify(report)};window.__REPORT_ID=${req.params.id};</script>
 </head><body><script>window.location.href='/?view=${req.params.id}';</script></body></html>`);
+  }
+  res.send(renderBrandedReportHTML(report, req.params.id));
 });
 
 const PORT = process.env.PORT || 3001;
