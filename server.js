@@ -516,7 +516,12 @@ function normalizeUrl(raw) {
   let u = String(raw).trim().replace(/^["'<]+|["'>]+$/g, '');
   u = u.replace(/^(https?:?\/*)/i, '').replace(/^\/+/, '');
   if (!/[a-z]/i.test(u) || !u.includes('.')) return '';
-  u = u.split(/[\/?#]/)[0].toLowerCase(); // just the domain
+  // Strip path/query/fragment + email-style "user@host" (e.g. someone@thrive.com)
+  u = u.split(/[\/?#]/)[0].toLowerCase();
+  if (u.includes('@')) u = u.split('@').pop();
+  // Reject anything that isn't a clean domain — must look like name.tld
+  // (1+ labels, last label = valid TLD ≥2 letters, no spaces/emoji/special chars)
+  if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/.test(u)) return '';
   return 'https://' + u;
 }
 
