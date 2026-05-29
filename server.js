@@ -399,6 +399,16 @@ app.post('/api/scan/start', (req, res) => {
     db.insertScanLog.run(ip, ua, String(req.body?.website_url || ''), referer, origin, null, null, 0, 'missing_url', ...adCols);
     return res.status(400).json({ error: 'Please enter your website domain to scan (e.g. yourcompany.com).' });
   }
+  // Validate the input is actually a domain — not a name, phrase, or random text.
+  // Catches bugs like the TikTok in-app browser visitor who typed "laura Epright 1965"
+  // (2026-05-29). Mirrors the client-side isValidDomain() in
+  // thrive-landing-pages/public/script.js so behavior is identical.
+  const _normalized = String(website_url).trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase();
+  const _validDomainRe = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,24}$/;
+  if (!_normalized || _normalized.length < 4 || _normalized.length > 253 || /\s/.test(_normalized) || !_normalized.includes('.') || !_validDomainRe.test(_normalized)) {
+    db.insertScanLog.run(ip, ua, String(req.body?.website_url || ''), referer, origin, null, null, 0, 'invalid_domain', ...adCols);
+    return res.status(400).json({ error: 'Please enter your website domain (like yourcompany.com), not a name or search term.' });
+  }
   if (!/^https?:\/\//i.test(website_url)) website_url = 'https://' + website_url;
 
   // Rate limit checks before we spin up any AI work
